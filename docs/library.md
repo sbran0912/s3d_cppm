@@ -1,0 +1,727 @@
+# Bibliothek lib3d – Referenz
+
+`lib3d` ist eine kleine 3D-Zeichenbibliothek auf OpenGL 3.3 (GLFW), realisiert
+als **C++20-Module**. Sie stellt Szenen-/Kamera-Bündel, Farb-, Mathe- und
+Mesh-Bausteine bereit und sammelt alle Zeichenaufrufe eines Frames zu
+effizienten Batches. Das Modul `bodies` ergänzt Körper um Flächen/Normalen und
+Schnittabfragen (Raycasting), zeichnet aber selbst nicht.
+
+- Zeichen-API: `import renderer; import draw;`
+- Mathe/Farben: `import math_core; import color;`
+- Meshes: `import mesh;` / `import mesh_io;`
+- Kollision: `import bodies;`
+- Build siehe [`docs/build.md`](build.md)
+
+Namenskonvention (Port aus dem TypeScript-Original): Typen in
+`PascalCase`, Funktionen/Methoden in `PascalCase`, Felder in `PascalCase`.
+
+---
+
+## 1. Grundgerüst eines Programms
+
+```cpp
+import renderer;
+import math_core;
+import color;
+
+#include <exception>
+using std::exception;
+
+int main() {
+    Scene scene;                        // Kamera + Welt-Attribute (Defaults s.u.)
+
+    auto draw = [&]() {
+        BeginScene(scene);              // Background, Nebel, Kamera, Licht
+        // ... hier zeichnen ...
+    };
+
+    try {
+        Init();                         // Fenster (Fenstermodus) + GL-Kontext + Shader
+    } catch (const exception& e) {
+        return 1;
+    }
+    StartAnimation(draw);               // Animations-Schleife, ruft draw pro Frame
+    return 0;
+}
+```
+
+**Ablauf pro Frame:** `StartAnimation` setzt die Zeit-Uniform, ruft die
+übergebene `draw`-Funktion auf und zeichnet danach automatisch alle im Frame
+gesammelten Zeichenbefehle (`FlushBatch`). Man zeichnet also *nur* über die
+`Draw*`-Funktionen; das eigentliche Rendern/Austauschen der Puffer
+übernimmt die Bibliothek.
+
+| Funktion | Bedeutung |
+| --- | --- |
+| `Init()` | Fenster im Fenstermodus (zentriert, 1280×800), OpenGL-Kontext, Shader, Batch-Zustand. Wirft `runtime_error`. |
+| `StartAnimation(const function<void()>& draw)` | Startet die Schleife; `draw` wird jedes Frame aufgerufen. |
+| `NoLoop()` | Beendet die Animations-Schleife. |
+| `ToggleFullscreen()` | Schaltet zwischen Fenster- und Vollbildmodus um. |
+| `SetFullscreen(bool on)` | Setzt den Vollbildmodus explizit. |
+| `IsFullscreen()` | `true`, wenn das Fenster im Vollbildmodus ist. |
+| `GetWidth()` / `GetHeight()` | Fenstergröße in Pixeln. |
+| `IsMouseDown()` | `true`, solange linke Maustaste gedrückt. |
+| `IsMouseUp()` | einmalig `true` beim Loslassen. |
+| `IsKeyDown(int key)` | `true`, solange die Taste gedrückt ist (Dauerdruck). |
+| `IsKeyPressed(int key)` | einmalig `true` beim Drücken (konsumierend, für Trigger). |
+
+> **Fenster, Vollbild & Beenden:** `Init` öffnet ein normales Fenster
+> (zentriert, 1280×800; auf kleinen Monitoren automatisch begrenzt). Mit
+> **F11** wird zur Laufzeit zwischen Fenster- und Vollbildmodus umgeschaltet –
+> das erledigt die Bibliothek selbst, alle Apps bekommen es automatisch.
+> Programmatisch geht es über `ToggleFullscreen()` bzw. `SetFullscreen(on)`;
+> `IsFullscreen()` fragt den Status ab. Der **OpenGL-Kontext bleibt beim
+> Umschalten erhalten** (kein Fenster-Neuaufbau); Fenstergröße, Viewport und
+> Aspect aktualisieren sich automatisch. Beendet wird mit **ESC** oder Alt+F4;
+> die Schleife läuft aus und `glfwTerminate()` stellt den vorherigen
+> Video-Modus wieder her. `NoLoop()` stoppt die Schleife ebenso sauber.
+
+### Tastatureingaben (Polling)
+
+Tastatur wird **pollend** im `draw`-Lambda abgefragt (kein Callback in der
+App nötig). Die Bibliothek pflegt den Zustand im Hintergrund; **ESC** (Beenden)
+und **F11** (Vollbild-Umschaltung) sind fest belegt.
+
+- `IsKeyDown(int key)` – `true`, solange die Taste gedrückt ist → für
+  **laufende Steuerung** (Kamera, Bewegung pro Frame).
+- `IsKeyPressed(int key)` – einmalig `true` beim Drücken; der Aufruf
+  **konsumiert** die Kante (wie `IsMouseUp`) → für **Trigger** (Effekt
+  umschalten, Pause, Screenshot).
+
+Der Parameter ist ein Wert aus dem `enum Key` (in `module renderer;`); die Werte
+entsprechen den `GLFW_KEY_*`-Codes, sodass auch ein GLFW-Code direkt übergeben
+werden kann. Selbst definierte Tasten: `static_cast<Key>(glfwCode)`.
+
+```cpp
+import renderer;
+import math_core;
+import color;
+
+Scene scene;
+double camAngle = 0;
+
+auto draw = [&]() {
+    BeginScene(scene);
+
+    // Laufende Steuerung: Pfeiltasten drehen die Kamera pro Frame.
+    const double speed = 0.03;
+    if (IsKeyDown(KeyLeft))  camAngle -= speed;
+    if (IsKeyDown(KeyRight)) camAngle += speed;
+
+    // Trigger: Leertaste schaltet den Effekt um (nur einmal pro Druck).
+    if (IsKeyPressed(KeySpace)) {
+        SetEffect(EffectPulse);
+    }
+    // ...
+};
+```
+
+> Hinweis: `IsKeyPressed` liefert die Kante nur **einmal** – wer denselben
+> Tastendruck in mehreren Zweigen auswerten will, liest sie in eine Variable
+> und verzweigt darauf.
+
+---
+
+## 2. Koordinatensystem, Kamera und Szene
+
+**Koordinatensystem:** `+Y` zeigt nach oben, die Kamera blickt in `+Z`.
+View- und Projection-Matrix laufen im Vertex-Shader; die Modell-Matrix wird
+pro Zeichenaufruf als Argument übergeben (kein globaler Modell-Zustand).
+
+```cpp
+struct Camera {
+    Vec3   Pos{50, 100, 200};   // Augpunkt (Weltkoordinaten)
+    Vec3   Target{0, 0, 0};     // Blickziel (Weltkoordinaten)
+    Vec3   Up{0, 1, 0};         // Oben-Vektor (Weltkoordinaten)
+    double FovY = 1.2;          // vertikales Sichtfeld (Bogenmaß)
+    double Near = 0.1;          // nahe Clipping-Ebene
+    double Far  = 1000;         // ferne Clipping-Ebene
+    Matrix4x4 View() const;                 // Look-At-Matrix
+    Matrix4x4 Projection(double aspect) const; // Perspective
+};
+
+struct Scene {
+    Camera     Cam;                         // Kamera (s. u.)
+    Vec3       SunDir{0.5, 1.0, 0.3};       // Lichtrichtung (Weltraum)
+    Fog        sceneFog;                    // Tiefen-Nebel
+    ColorState Background{40/255.0, 40/255.0, 40/255.0, 1};
+};
+
+struct Fog {
+    bool       Enabled = false;
+    double     Near = 0;
+    double     Far  = 1;
+    ColorState Color{0, 0, 0, 0};
+};
+```
+
+### 2.1 Die Attribute von `Camera`
+
+`Pos` und `Target` bilden ein **Paar** – einzeln sind sie bedeutungslos. Die
+Kamera schaut immer von `Pos` nach `Target`:
+
+$$\vec{f} = \frac{\text{Target} - \text{Pos}}{\lVert \text{Target} - \text{Pos} \rVert}$$
+
+| Attribut | Einheit | Bedeutung | Muss-Bedingung |
+|---|---|---|---|
+| `Pos` | Weltkoordinaten | Augpunkt: Position der Kamera. Von hier aus wird die Szene betrachtet. | `Pos != Target` |
+| `Target` | Weltkoordinaten | Blickziel: Punkt, auf den die Kamera blickt. Legt **nur die Richtung** fest, nicht die Entfernung. | `Pos != Target` |
+| `Up` | Weltkoordinaten | Referenz-„Oben"-Vektor: bestimmt, wohin die Y-Achse des Bildes zeigt (aufrecht oder gekippt). | nicht parallel zu `Target - Pos` |
+| `FovY` | **Bogenmaß** | Vertikales Blickfeld. Klein = Tele (enger Ausschnitt), groß = Weitwinkel. | `0 < FovY < π` |
+| `Near` | Kamera-Einheiten | Vordere Clipping-Ebene: alles Nähere wird weggeschnitten. | `Near > 0` |
+| `Far` | Kamera-Einheiten | Hintere Clipping-Ebene: alles Weiterentfernte wird weggeschnitten. | `Far > Near` |
+
+**`Pos` und `Target`:** `Target` ist **keine Position**, sondern nur eine
+Richtungsangabe. Die Kamera „steht" in `Pos`; die Entfernung
+`|Target - Pos|` beeinflusst lediglich die Hebelwirkung kleiner `Target`-
+Änderungen auf die Blickrichtung. Für eine **Orbit-Kamera** bleibt `Target`
+fest (typisch der Szenenmittelpunkt, z. B. `{0,0,0}`) und nur `Pos` wandert
+auf einem Kreis darum herum.
+
+**`Up`:** Muss **nicht** senkrecht auf der Blickrichtung stehen. `LookAtMatrix`
+orthonormalisiert automatisch (Gram-Schmidt):
+
+```cpp
+const Vec3 forward = target.Sub(cameraPos).Normalize();
+const Vec3 right   = forward.Cross(up).Normalize();
+const Vec3 realUp  = right.Cross(forward);
+```
+
+`Up` dient also nur als Referenz; das tatsächliche Kamera-Oben ist `realUp`.
+Typisch ist `{0,1,0}` („Welt-Y ist oben"). **Achtung:** `Up` darf nicht
+parallel zur Blickrichtung sein, sonst wird `right = 0` und die Normalisierung
+entartet.
+
+**`FovY`:** Wird als `fovY` an `PerspectiveMatrix` übergeben, das intern
+`f = 1/tan(FovY/2)` rechnet – daher **Bogenmaß, nicht Grad**. Der Default
+`1.2 rad` entspricht ca. `68.8°`. Das horizontale Sichtfeld ergibt sich aus
+`FovY` und dem Fenster-Seitenverhältnis (`aspect = Breite/Höhe`).
+
+**`Near` / `Far`:** Beide sind Abstände in Kamerakoordinaten entlang der
+Blickrichtung. Sie bestimmen zusammen die Tiefenpräzision des Z-Buffers: je
+größer das Verhältnis `Far/Near`, desto größer die Gefahr von Z-Fighting.
+`Near` muss `> 0` sein, da die Projektionsmatrix sonst singulär wird. `Far`
+begrenzt die sichtbare Tiefe **unabhängig vom Nebel** (`sceneFog.Far`):
+Objekte hinter `Far` fehlen komplett, statt nur ausgenebelt zu werden.
+
+### 2.2 Die Attribute von `Scene`
+
+| Attribut | Bedeutung |
+|---|---|
+| `Cam` | Kamera der Szene. Wird von `BeginScene` via `ApplyCamera` gesetzt. **Achtung:** Wer `Cam.Pos` pro Frame selbst zuweist (Orbit-Kamera), überschreibt damit den Startwert – er gilt dann nur vor dem ersten Frame. |
+| `SunDir` | Richtung der Sonne in **Weltkoordinaten** (zeigt von der Fläche *zur* Lichtquelle). `BeginScene` transformiert sie mit der View-Matrix in Kamerakoordinaten und ruft `SetLightDirection` auf. Bestimmt das Flat-Shading; muss nicht normalisiert sein. |
+| `sceneFog` | Tiefen-Nebel. `Enabled == false` → kein Nebel. `Near`/`Far` sind Distanzen in Kamerakoordinaten (Beginn bzw. Ende des Übergangs), `Color` ist die Nebelfarbe (RGBA, 0..1). `BeginScene` ruft damit `SetFog` auf. |
+| `Background` | Füllfarbe des Fensters vor dem Zeichnen (RGBA, 0..1). `BeginScene` ruft damit `Background()` auf. |
+
+> **Hinweis:** Das Sortieren der Batch ist **kein** Feld von `Scene`, sondern
+> wird direkt über `SetBatchSort(bool)` gesteuert (siehe unten).
+
+- `BeginScene(const Scene&)` – pro Frame aufrufen. Setzt Hintergrund, (falls
+  `sceneFog.Enabled`) Nebel, Kamera (`ApplyCamera`) und die Sonnenrichtung in
+  Kamerakoordinaten.
+- `ApplyCamera(const Camera&)` – setzt View + Projection (Aspect aus
+  `GetWidth/GetHeight`), ohne Hintergrund/Nebel/Licht.
+- `SetView(const Matrix4x4&)` / `SetProjection(const Matrix4x4&)` – manuelle
+  Kamera-Matrizen.
+- `SetFog(near, far, r, g, b, a)` – Tiefen-Nebel direkt.
+- `SetLightDirection(x, y, z)` – Lichtrichtung (Kamerakoordinaten) fürs
+  Flat-Shading.
+- `SetBatchSort(bool)` – fasst auch nicht-benachbarte Primitive mit gleichem
+  Zustand zusammen. **Achtung:** ändert die Zeichenreihenfolge, nur für opake
+  Geometrie geeignet. `CompactBatch()` sortiert/fasst manuell zusammen.
+- `GetPendingDrawCalls()` / `GetPendingInstancedDrawCalls()` – Diagnose, kein
+  GL-Zugriff.
+
+---
+
+## 3. Farben
+
+```cpp
+struct ColorState { double R=1, G=1, B=1, A=1; }; // Werte 0..1
+```
+
+`ColorInput` kapselt eine Farbangabe und wird in den Style-Objekten benutzt.
+Ist es **nicht gesetzt** (`Set == false`, der Default), überschreibt es den
+aktuellen Low-Level-Zustand nicht.
+
+```cpp
+// Direkte Konstruktoren von ColorInput:
+ColorInput("#ff8800");        // Hex (#rgb oder #rrggbb)
+ColorInput(128.0);            // Graustufe 0..255
+ColorInput(255, 128, 0);      // r,g,b 0..255
+ColorInput(255, 128, 0, 200); // r,g,b,a 0..255
+
+// Parser (liefern ColorState mit 0..1):
+ParseHex("#44aaff");
+ParseColor(0.5, 0.8, 1.0);    // 0..255-Varianten ebenfalls vorhanden
+
+bool ColEq(const ColorState& a, const ColorState& b); // exakter Vergleich
+```
+
+---
+
+## 4. Objekte erstellen
+
+Es gibt zwei Wege: **ohne Body** (nur Zeichengeometrie) und **mit Body**
+(Mesh + lokale Flächen/Normalen für Kollision/Raycasting). In beiden Fällen
+wird die Geometrie als `Mesh` erzeugt und über `DrawMesh` gezeichnet.
+
+```cpp
+struct Mesh {
+    vector<float> Triangles; // xyz-Tripel je Dreieck (9 Floats/Dreieck)
+    vector<float> Lines;     // xyz-Tripel je Linien-Endpunkt (Paare)
+};
+
+// Mesh-Bausteine (lokal um den Ursprung):
+Mesh MakeCubeMesh(double w, double h, double d);
+Mesh MakePyramidMesh(double base, double height); // Basis y=0, Spitze y=height
+Mesh MakeSphereMesh(double radius, int slices, int stacks);
+Mesh MakeGridMesh(double size, int cells);        // Bodengitter, XZ-Ebene y=0
+```
+
+> `MakeGridMesh(size, cells)` – `size` = Kantenlänge, `cells` = Zellen pro
+> Achse (es entstehen `cells+1` Linien je Richtung). Das Gitter liegt bei
+> `y=0` und ist um den Ursprung zentriert; es füllt nur `Lines`. Wie alle
+> Meshes einmal erzeugen und über `DrawMesh(gridMesh, style)` (Modus
+> `StyleStroke`) zeichnen.
+
+> `MakeSphereMesh(radius, slices, stacks)` – `slices` = Längengrade,
+> `stacks` = Breitengrade. Mehr = glatter, aber teurer.
+
+### 4.1 Objekt **ohne** Body
+
+Das Mesh wird einmal erzeugt und pro Frame mit einer Modell-Matrix
+(Translation/Rotation) gezeichnet. Das ist der einfachste Fall und ideal,
+wenn keine Kollision/Raycasting gebraucht wird.
+
+```cpp
+const ShapeStyle cubeStyle{
+    .stroke = ColorInput("#1b1b1b"),
+    .fill   = ColorInput("#d3ff44"),
+    .lineWidth = 1,
+    .mode = StyleBoth,
+};
+
+const Mesh cubeMesh = MakeCubeMesh(30, 30, 30); // EINMAL erzeugen
+
+double angle = 0;
+auto draw = [&]() {
+    BeginScene(scene);
+    angle -= 0.01;
+
+    const Matrix4x4 model =
+        MultMatrix(RotateMatrix(0, angle, 0),      // Szene drehen
+                   TranslateMatrix(-45, 15, 0));   // Platzieren
+    DrawMesh(cubeMesh, cubeStyle, model);
+};
+```
+
+Modell-Matrix-Helfer: `IdentityMatrix()`, `TranslateMatrix(dx,dy,dz)`,
+`RotateMatrix(ax,ay,az)` (kombiniert `Ry*Rx*Rz`), `MultMatrix(a,b)`
+(`a*b`, d. h. rechts wird zuerst angewendet).
+
+### 4.2 Objekt **mit** Body
+
+Ein `Body` bündelt das Mesh, die daraus abgeleiteten lokalen **Faces**
+(inkl. Normalen), eine Position und Euler-Rotationen. Er ist der Träger für
+Kollision/Raycasting. Farbe/Linienbreite gehören **nicht** in den Body,
+sondern in den `ShapeStyle` beim Zeichnen.
+
+```cpp
+struct Body {
+    Mesh         Geometry;   // Zeichengeometrie (lokal)
+    vector<Face> Faces;      // lokale Faces inkl. Normalen
+    Vec3         Pos;
+    double       RotX = 0, RotY = 0, RotZ = 0;
+
+    Matrix4x4     ModelMatrix() const; // Translation * Rotation
+    vector<Face>  WorldFaces() const;  // Faces in Weltkoordinaten
+};
+
+// Faces werden automatisch aus der Geometrie ermittelt (Single Source of Truth):
+Body MakeBody(const Mesh& geometry, const Vec3& pos,
+              double rotX = 0, double rotY = 0, double rotZ = 0);
+```
+
+```cpp
+const Mesh ballMesh = MakeSphereMesh(40, 40, 40);
+Body ballBody = MakeBody(ballMesh, {0, 40, 0}); // Faces automatisch
+
+double angle = 0;
+auto draw = [&]() {
+    BeginScene(scene);
+    angle += 0.01;
+    ballBody.RotY = angle;                        // Body drehen
+    DrawMesh(ballBody.Geometry, ballStyle,        // Rendern wie ohne Body
+             ballBody.ModelMatrix());             // Körper-Transform nutzen
+};
+```
+
+**Rendern ist identisch zum Fall ohne Body** – man zeichnet `body.Geometry`
+mit `body.ModelMatrix()`. Der Mehrwert des Bodys liegt in den Faces:
+
+```cpp
+body.WorldFaces();                 // Faces in Weltkoordinaten (z. B. für Rays)
+BuildFaces(mesh);                  // Faces neu aus einem Mesh ableiten
+TransformFaces(body.Faces, body.ModelMatrix()); // lokale Faces -> Welt
+```
+
+| | ohne Body | mit Body |
+| --- | --- | --- |
+| Typ | `Mesh` | `Body` (enthält `Mesh`) |
+| Erzeugen | `Make*Mesh(...)` | `MakeBody(mesh, pos, rotX, rotY, rotZ)` |
+| Zeichnen | `DrawMesh(mesh, style, model)` | `DrawMesh(body.Geometry, style, body.ModelMatrix())` |
+| Rotation | Modell-Matrix | `body.RotX/RotY/RotZ` + `ModelMatrix()` |
+| Kollision/Raycast | nicht möglich | `body.Faces`, `body.WorldFaces()`, `RaycastSegment` |
+| Geeignet für | reine Darstellung | Physik, Trefferabfragen, Picking |
+
+### 4.3 Externe Meshes laden (OBJ)
+
+Die Bibliothek kann Meshes im **Wavefront-OBJ**-Format von der Festplatte
+laden. Es gibt bewusst **keine** Bau-/Speicher-Funktionen – Meshes werden
+außerhalb erzeugt (Editor wie Blender oder ein eigenes Skript) und hier
+eingelesen.
+
+```cpp
+Mesh LoadOBJ(const std::string& path); // wirft runtime_error bei Fehlern
+```
+
+Parser-Umfang:
+
+- `v x y z` → Vertex-Pool
+- `f …` → `Triangles` (Dreiecke 1:1, Quads/Polygone per Fan-Triangulierung)
+- `l …` → `Lines` (aufeinanderfolgende Paare)
+- Indizes **1-basiert und negativ**; `a/b/c` bzw. `a//c` erlaubt (UV/Normal-Teile
+  werden ignoriert)
+- Kommentare `#` und unbekannte Direktiven (`vn`, `vt`, `g`, `o`, `s`,
+  `mtllib`, `usemtl`) werden übersprungen
+
+```cpp
+const Mesh vehicleMesh = LoadOBJ("rocket.obj"); // wirft bei Fehlern
+// direkt weiterverwenden wie jedes Make*Mesh:
+DrawMesh(vehicleMesh, style, IdentityMatrix());
+Body body = MakeBody(vehicleMesh, {0, 0, 0});
+```
+
+Hinweise:
+- Koordinaten bleiben unverändert (OBJ ist typischerweise **Y-up**, passend zu
+  „+Y zeigt nach oben").
+- Für Drahtgitter müssen im OBJ **`l`-Linien** enthalten sein (Styles sind oft
+  `StyleBoth`).
+- Für Kollision (`bodies`) das Mesh in **Endgröße** laden – nicht nur per
+  Modell-Matrix skalieren (sonst passen `WorldFaces()` und Rendering nicht
+  zusammen). Mehrere OBJ-Objekte/Gruppen werden zu **einem** `Mesh`
+  zusammengeführt.
+
+#### Mesh skalieren (geladene Meshes)
+
+Zum Vergrößern/Verkleinern eines Meshes gibt es `ScaleMesh`. Es liefert eine
+**Kopie** mit allen Koordinaten (Triangles und Lines) um den Faktor `s` skaliert
+– uniform und um den Ursprung; das Eingabe-Mesh bleibt unverändert.
+
+```cpp
+Mesh ScaleMesh(const Mesh& mesh, double s);
+
+const Mesh mesh = LoadOBJ("rocket.obj");
+Body body = MakeBody(ScaleMesh(mesh, 2.0), {0, 0, 0});
+```
+
+**Wichtig:** Das Mesh **vor** `MakeBody` skalieren (Skalierung der Mesh-Daten),
+damit `faces`/`WorldFaces()` zur Geometrie passen. Eine Skalierung *nur* über
+die Modell-Matrix würde `bodies` nicht erfassen, weil `Body::ModelMatrix()` nur
+`Translation · Rotation` rechnet. Eine Skalierungs-Matrix (`scaleMatrix`) gibt
+es bewusst nicht.
+
+Die App `rocket` nutzt `ScaleMesh(mesh, rocketScale)`.
+
+#### Blender-Export (Hinweise)
+
+- **Normalen nicht nötig:** `vn` (und `vt`) werden ignoriert. Auch wenn die
+  `f`-Zeilen sie referenzieren (z. B. `f 1//1 2//2 3//3`), wird nur der Teil vor
+  dem ersten `/` gelesen. Die Normalen in Blender also einfach anlassen.
+- **Triangulate Faces** aktivieren → saubere Dreiecke (sonst Fan-Triangulierung
+  von Quads/ngons).
+- **Write Edges / Include Edges** aktivieren → schreibt `l`-Linien; nur so
+  bekommst du das Drahtgitter (Styles sind oft `StyleBoth`).
+- **Achsen** mit den Defaults belassen (`Forward -Z`, `Up Y`) – passt zu
+  „+Y zeigt nach oben".
+- Objekte/Gruppen sowie `usemtl`/`mtllib` sind egal – alles wird zu **einem**
+  `Mesh` zusammengeführt.
+- **Shading bleibt flach:** Auch bei „Shade Smooth" leuchtet die Bibliothek pro
+  Dreiecksfläche aus (Normale aus `dFdx`/`dFdy`).
+- **Für `bodies`:** In Blender die Normalen konsistent nach außen richten
+  („Recalculate Outside") – die Kollision leitet die Flächennormale aus der
+  Windungsreihenfolge ab.
+
+---
+
+## 5. Rendermethoden
+
+Alle Zeichenaufrufe nehmen ihre **Modell-Matrix als letztes Argument**
+(Default `IdentityMatrix()`) und sammeln sich im aktuellen Batch. Die
+High-Level-Fassade (`Draw*`) übergibt Farbe/Linienbreite als Options-Objekt.
+
+### 5.1 Zeichenmodi und Style-Objekte
+
+```cpp
+enum DrawStyle { StyleStroke = 0, StyleFill = 1, StyleBoth = 2 };
+
+struct PrimitiveStyle {   // für Punkte/Linien
+    ColorInput stroke;    // Linienfarbe (unbeleuchtet)
+    ColorInput fill;      // Füllfarbe (beleuchtet)
+    double lineWidth = 0; // 0 = Zustand nicht ändern
+    double pointSize = 0; // 0 = Zustand nicht ändern
+};
+
+struct ShapeStyle {       // für Flächen/Primitive mit Modus
+    ColorInput stroke;
+    ColorInput fill;
+    double lineWidth = 0;
+    double pointSize = 0;
+    DrawStyle mode = StyleStroke; // was gezeichnet wird
+    double z = 0;                 // Z-Ebene für Rect
+    int segments = 0;             // Segmentzahl für Circle (0 -> 64)
+};
+```
+
+Nicht gesetzte Felder (`ColorInput.Set == false` bzw. `0`) überschreiben den
+aktuellen Low-Level-Zustand **nicht** – man kann so Stile schrittweise
+vererben.
+
+### 5.2 Übersicht der Renderfunktionen
+
+| Funktion | Beschreibung |
+| --- | --- |
+| `DrawMesh(const Mesh&, const ShapeStyle&, model)` | Mesh mit Fill (beleuchtet) und/oder Drahtgitter-Linien. Zentral für alle Mesh-Objekte. |
+| `DrawMeshInstanced(const Mesh&, const ShapeStyle&, const vector<Instance>&)` | **GPU-Instancing**: dieselbe Geometrie in *einem* Draw-Call mehrfach, je Instanz mit eigener Modell-Matrix und Farbe. |
+| `DrawPoint(x,y,z, const PrimitiveStyle&, model)` | Einzelner Punkt (`pointSize`). |
+| `DrawLine(x1,y1,z1,x2,y2,z2, const PrimitiveStyle&, model)` | Einzelne Linie. |
+| `DrawTriangle(x1..z3, const ShapeStyle&, model)` | Dreieck (Fill/Stroke/Both). |
+| `DrawShape(x1..z4, const ShapeStyle&, model)` | Viereck aus 4 Punkten (Fill als 2 Dreiecke, Stroke als Umriss). |
+| `DrawRect(x,y,w,h, const ShapeStyle&, model)` | Rechteck in der X/Y-Ebene auf `style.z`. |
+| `DrawCircle(x,y,z, radius, const ShapeStyle&, model)` | Kreis (`style.segments`; 0 → 64). |
+| `DrawPolygon(const vector<double>& pts, const ShapeStyle&, model)` | Konvexes Polygon aus xyz-Tripeln (`pts.size()/3` Ecken; Fill als Fächer). |
+
+**GPU-Instancing** (`Instance`):
+
+```cpp
+struct Instance {
+    Matrix4x4  Model;              // row-major wie Matrix4x4
+    ColorState Color{1, 1, 1, 1};  // überschreibt die Style-Farbe
+};
+
+vector<Instance> cubes(n);
+for (size_t i = 0; i < n; i++) {
+    cubes[i].Model = MultMatrix(TranslateMatrix(px, py, pz),
+                                RotateMatrix(0, angle, 0));
+    cubes[i].Color = ColorState{0.25 + 0.6*t, 0.45, 0.9 - 0.6*t, 1};
+}
+DrawMeshInstanced(cubeMesh, cubeStyle, cubes); // EIN Draw-Call für alle
+```
+
+> Beim Instancing wird die Farbe aus dem `ShapeStyle` ignoriert; sie kommt
+> aus jeder `Instance`.
+
+> **Zeichenreihenfolge:** Instancing-Draws werden – unabhängig von der
+> Aufrufreihenfolge – nach den Immediate-Primitiven ausgegeben. Wer die
+> Reihenfolge bewusst trennen will (z. B. transparente Debug-Overlays erst
+> nach der opaken Welt), ruft `FlushBatch()` mitten im Frame auf (siehe
+> Abschnitt 9).
+
+### 5.3 Low-Level-Zustand und Effekte
+
+Die `Draw*`-Fassade ist nur eine bequeme Hülle über Low-Level-Primitiven,
+die den *aktuellen* Zeichenzustand verwenden. Wer den Zustand direkt steuern
+will, kann diese (aus `module renderer;`) verwenden:
+
+| Zustand | Setter | Default |
+| --- | --- | --- |
+| Füllfarbe | `FillColor(ColorInput/ColorState)` | weiß |
+| Linienfarbe | `StrokeColor(ColorInput/ColorState)` | schwarz |
+| Linienbreite | `StrokeWidth(double)` | 1 |
+| Punktgröße | `PointSize(double)` | 4 |
+| Effekt | `SetEffect(EffectMode)` | `EffectFlat` |
+| Gradient-Endfarbe | `SetGradient(ColorInput/ColorState)` | – |
+| Gradient-Zentrum/Radius | `SetGradientCenter(cx,cy,cz,radius)` | – |
+| Hintergrund (löscht Canvas) | `Background(ColorInput/ColorState)` | – |
+
+Primitive im Low-Level-Stil (nur bei Bedarf, sonst `Draw*` nutzen):
+`Point`, `Line`, `Triangle`, `Shape`, `Rect`, `Circle`, `Polygon` – gleiche
+Argumente wie die `Draw*`-Variante, aber ohne Style-Objekt.
+
+**Shader-Effekte** (`enum EffectMode`):
+
+| Wert | Effekt |
+| --- | --- |
+| `EffectFlat` (0) | einfache Farbe (Default). |
+| `EffectGradient` (1) | radialer Verlauf von der aktuellen Farbe zur `SetGradient`-Farbe, ausgehend von `SetGradientCenter(...)`. |
+| `EffectPulse` (2) | Grundfarbe mit sinusförmiger Helligkeitspulsation (nutzt die Frame-Zeit). |
+
+```cpp
+SetEffect(EffectPulse);            // pulsieren lassen
+SetEffect(EffectGradient);
+SetGradient(ColorInput("#ff0000"));// Endfarbe
+SetGradientCenter(0, 40, 0, 200);  // Zentrum + Radius des Verlaufs
+DrawMesh(ballMesh, ballStyle, IdentityMatrix());
+
+SetEffect(EffectFlat);             // zurück zum Normalzustand
+```
+
+Zusätzliche globale Zustände: `SetFog(...)`, `SetLightDirection(...)`,
+`Background(...)`, `SetBatchSort(...)`, `CompactBatch()`, `SetView(...)`,
+`SetProjection(...)`.
+
+---
+
+## 6. Modul `bodies` – Flächen, Normalen, Raycasting
+
+`bodies` zeichnet nicht, sondern arbeitet auf `Mesh`/`Body`:
+
+```cpp
+struct Face { Vec3 A, B, C, Normal; }; // Dreieck + normierte Flächennormale
+
+vector<Face> BuildFaces(const Mesh& mesh);              // CCW -> Normale außen
+Face         TransformFace(const Face&, const Matrix4x4&);
+vector<Face> TransformFaces(const vector<Face>&, const Matrix4x4&);
+
+struct RayHit {
+    bool isHit = false;
+    double T = 0;    // Parameter entlang der Strecke [0..1]
+    Vec3 Point;      // Trefferpunkt
+    Vec3 Normal;     // Flächennormale am Treffer
+};
+RayHit RaycastSegment(const Vec3& p1, const Vec3& p2, const vector<Face>& faces);
+
+struct ClosestFaceHit {
+    Vec3   Point;          // nächster Punkt auf dem Face
+    Vec3   Normal;         // Flächennormale (Außenseite)
+    double Distance = 0;   // |Point - p| (unsigned)
+    double SignedDistance = 0; // >0 außen, <0 innen (bzgl. Normale)
+};
+ClosestFaceHit ClosestPointToFace(const Vec3& p, const Face& face);
+```
+
+Typischer Einsatz (Strahlen gegen alle Körper):
+
+```cpp
+vector<Face> worldFaces;
+for (const auto& b : bodies) {
+    const vector<Face> wf = b.Object.WorldFaces();
+    worldFaces.insert(worldFaces.end(), wf.begin(), wf.end());
+}
+
+const RayHit hit = RaycastSegment(apex, end, worldFaces);
+const Vec3 endpoint = hit.isHit ? hit.Point : end; // Strahl am Treffer kappen
+
+DrawLine(apex.X, apex.Y, apex.Z, endpoint.X, endpoint.Y, endpoint.Z,
+         PrimitiveStyle{.stroke = ColorInput("#ff8800"), .lineWidth = 1});
+```
+
+---
+
+## 7. Mathe-Helfer
+
+**`Vec3`** – 3D-Vektor (`X, Y, Z`):
+
+`Add`, `Sub`, `Scale`, `Mag(m)`, `Limit(max)`, `Negate`, `Dot`, `Cross`,
+`SquaredLength`, `Length`, `DistanceTo`, `Normalize`, `Lerp(v,t)`, `Clone`,
+`Equals(v,eps)`, `Transform(Matrix4x4)`, `TransformDir(Matrix4x4)`.
+
+**`Matrix4x4`** – `array<array<double,4>,4>`, **row-major** (wird für OpenGL
+intern in column-major konvertiert): `TranslateMatrix`, `RotateMatrix`,
+`MultMatrix`, `IdentityMatrix`, `ViewWorldMatrix`, `LookAtMatrix`
+(blickt in `+Z`), `WorldToCamera`, `RotateAround(point,pivot,rotation)`
+(Punkt um Drehpunkt rotieren), `PerspectiveMatrix(fovY,aspect,near,far)`.
+
+**`math_core`**: `Project(fov, Vec3)` (3D→Bildschirm, für 2D-Overlays),
+`Constrain(value, lo, hi)`, `Random(n1, n2)` (int, `[n1,n2)`),
+`RandomFloat(lo, hi)` (double, `[lo,hi)`).
+
+---
+
+## 8. Vollständiges Minimalbeispiel (mit Body)
+
+```cpp
+import renderer;
+import math_core;
+import color;
+import mesh;
+import draw;
+import bodies;
+
+#include <exception>
+using std::exception;
+
+int main() {
+    Scene scene;
+    scene.Cam.Pos = {50, 100, 200};
+    scene.SunDir  = {0.5, 1.0, 0.3};
+    scene.sceneFog = {true, 100, 400, ColorState{0.25, 0.25, 0.25, 1}};
+
+    const ShapeStyle ballStyle{
+        .stroke = ColorInput("#2f3a00"),
+        .fill   = ColorInput("#d3ff44"),
+        .lineWidth = 1,
+        .mode = StyleBoth,
+    };
+
+    Body ball = MakeBody(MakeSphereMesh(40, 40, 40), {0, 40, 0});
+    double angle = 0;
+
+    auto draw = [&]() {
+        BeginScene(scene);
+        ball.RotY = angle += 0.01;
+        DrawMesh(ball.Geometry, ballStyle, ball.ModelMatrix());
+
+        // Kollision/Raycasting-Beispiel: Abstand zur Oberfläche
+        const vector<Face> faces = ball.WorldFaces();
+        const auto c = ClosestPointToFace(Vec3{0, 0, 0}, faces[0]);
+        (void)c;
+    };
+
+    try { Init(); } catch (const exception&) { return 1; }
+    SetBatchSort(true);
+    StartAnimation(draw);
+    return 0;
+}
+```
+
+Weitere vollständige Beispiele liegen unter `apps/`:
+`beispiel` (Meshes + Szenenrotation), `vorlage` (Body + Gitter),
+`instanzen` (GPU-Instancing), `ray` (Body-Faces + Raycasting + Effekte),
+`boids` (Schwarm mit Vehicle/Steering),
+`vehic` (Fahrzeug-Schwarm mit DNA/Seek, GPU-Instancing für Futter und
+Fahrzeuge),
+`rocket` (wie `boids`, aber die Vehicles sind ein **geladenes** OBJ aus
+`apps/rocket/rocket.obj`; Hindernis-Würfel und Gitter bleiben prozedural).
+
+---
+
+## 9. Hinweise & Fallstricke
+
+- **Keine globale Modell-Matrix:** Position/Rotation immer als `model`-
+  Argument bzw. über `Body::ModelMatrix()` übergeben.
+- **Stile erben:** Nur gesetzte Felder überschreiben den Zustand. Für
+  reproduzierbare Ergebnisse im Zweifel `ColorInput(...)` explizit setzen.
+- **Batching:** Alle `Draw*`-Aufrufe eines Frames werden gesammelt und am
+  Frame-Ende automatisch gezeichnet. `Background(...)` zeichnet den Batch
+  vorher aus (nicht mitten im Frame aufrufen, außer gewollt).
+- **`FlushBatch()`:** zeichnet den aktuellen Batch sofort aus (normalerweise
+  geschieht das automatisch am Frame-Ende). Ein Aufruf mitten im Frame trennt
+  die Zeichenreihenfolge, z. B. um transparente Debug-Overlays erst nach der
+  opaken Welt zu zeichnen.
+- **`SetBatchSort(true)`** nur für opake Geometrie (ändert die
+  Zeichenreihenfolge; Blending wäre dann nicht korrekt sortiert).
+- **Kamera:** `Target` ist nur eine Richtungsangabe, keine Position – die
+  Kamera steht in `Pos`. `FovY` ist in **Bogenmaß** anzugeben. `Near` muss
+  `> 0` sein, `Far > Near`. `Up` darf nicht parallel zur Blickrichtung sein.
+- **Clipping vs. Nebel:** `Camera::Far` schneidet Geometrie hart ab, während
+  `sceneFog.Far` sie nur ausnebelt. Bei weit entfernter Kamera zuerst `Far`
+  prüfen, dann den Nebel.
+- **Meshes wiederverwenden:** Geometrie einmal erzeugen und über alle
+  Frames/Instanzen teilen – nicht pro Frame neu bauen.
+- **Body vs. Mesh:** Renderdaten (Farbe/Linienbreite) gehören in den
+  `ShapeStyle`, nicht in den `Body`. Der `Body` trägt nur Geometrie,
+  Faces und Transform.
+- **Linken** gegen die statische Bibliothek: Objekt **vor** der Bibliothek
+  und Systembibliotheken (siehe `docs/build.md`).

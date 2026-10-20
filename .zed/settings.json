@@ -1,0 +1,13 @@
+{
+  "lsp": {
+    "clangd": {
+      "binary": {
+        "path": "clangd-22",
+        "arguments": [
+          "--experimental-modules-support",
+          "--compile-commands-dir=build"
+        ]
+      }
+    }
+  }
+}
