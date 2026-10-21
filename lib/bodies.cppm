@@ -52,8 +52,6 @@ export struct Body {
     std::vector<Face> WorldFaces() const;
 };
 
-export Body MakeBody(const Mesh& geometry, const Vec3& pos, const Vec3& rot = Vec3{});
-
 // ====================================================================
 // FACES
 // ====================================================================
@@ -200,7 +198,7 @@ std::vector<Face> Body::WorldFaces() const {
     return TransformFaces(faces, ModelMatrix());
 }
 
-export Body MakeBody(const Mesh& geometry, const Vec3& pos, const Vec3& rot) {
+export Body MakeBody(const Mesh& geometry, const Vec3& pos, const Vec3& rot = Vec3{}) {
     Body b;
     b.geometry = geometry;
     b.faces = BuildFaces(b.geometry);

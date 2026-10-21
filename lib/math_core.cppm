@@ -5,6 +5,8 @@ module;
 #include <random>
 #include <algorithm>
 
+export module math_core;
+
 namespace {
 
 std::mt19937& rng() {
@@ -13,8 +15,6 @@ std::mt19937& rng() {
 }
 
 }
-
-export module math_core;
 
 // ====================================================================
 // TYPEN

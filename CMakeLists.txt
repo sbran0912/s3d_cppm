@@ -40,9 +40,9 @@ function(add_s3d_app name)
 endfunction()
 
 add_s3d_app(beispiel apps/beispiel/main.cpp)
-add_s3d_app(boids apps/boids/main.cpp apps/boids/vehicle.cppm)
+add_s3d_app(boids apps/boids/main.cpp apps/boids/boids.cppm)
 add_s3d_app(vehic apps/vehic/main.cpp apps/vehic/vehicle.cppm)
-add_s3d_app(rocket apps/rocket/main.cpp apps/rocket/vehicle.cppm)
+add_s3d_app(rocket apps/rocket/main.cpp apps/rocket/rocket.cppm)
 add_custom_command(TARGET rocket POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_CURRENT_SOURCE_DIR}/apps/rocket/rocket.obj
