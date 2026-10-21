@@ -12,14 +12,14 @@ find_package(OpenGL REQUIRED)
 
 # Modul-Quellen (einmal definiert, mehrfach verwendet)
 set(CXXMODS
-    lib/modules/color.cppm
-    lib/modules/math_core.cppm
-    lib/modules/mesh.cppm
-    lib/modules/mesh_io.cppm
-    lib/modules/shader.cppm
-    lib/modules/bodies.cppm
-    lib/modules/draw.cppm
-    lib/modules/renderer.cppm
+    lib/color.cppm
+    lib/math_core.cppm
+    lib/mesh.cppm
+    lib/mesh_io.cppm
+    lib/shader.cppm
+    lib/bodies.cppm
+    lib/draw.cppm
+    lib/renderer.cppm
 )
 # App-Quellen: .cpp direkt in add_executable, .cppm als Module registrieren
 function(add_s3d_app name)

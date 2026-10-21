@@ -1,7 +1,7 @@
 # Build-Prozess
 
 Dieses Projekt ist ein C++20-Modules-Demo mit **CMake + Ninja + Clang 22**.
-Alle Bibliotheksfunktionen liegen als C++20-Module (`.cppm`) in `lib/modules/`,
+Alle Bibliotheksfunktionen liegen als C++20-Module (`.cppm`) in `lib/`,
 die Apps (und der Test) importieren sie per `import` und werden direkt
 gelinkt – es gibt keine separate statische Bibliothek mehr.
 
@@ -13,7 +13,7 @@ gelinkt – es gibt keine separate statische Bibliothek mehr.
 .
 ├── CMakeLists.txt              Build-Konfiguration (CMake)
 ├── .zed/settings.json          clangd-Konfiguration (Zed)
-├── lib/modules/                C++20-Module der Bibliothek
+├── lib/                        C++20-Module der Bibliothek
 │   ├── color.cppm              → module color;
 │   ├── math_core.cppm          → module math_core;
 │   ├── mesh.cppm               → module mesh;
@@ -121,7 +121,7 @@ verwenden, ohne sich gegenseitig zu stören.
 
 ### Neues Bibliotheks-Modul
 
-1. `.cppm` in `lib/modules/` anlegen (mit `export module <name>;`).
+1. `.cppm` in `lib/` anlegen (mit `export module <name>;`).
 2. Den Dateinamen in `CXXMODS` in `CMakeLists.txt` eintragen.
 3. Von Apps/anderen Modulen per `import <name>;` nutzbar.
 

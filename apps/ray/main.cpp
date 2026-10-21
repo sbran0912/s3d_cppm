@@ -92,11 +92,11 @@ int main() {
     const ColorState white = ParseHex("#ffffff");
 
     vector<SceneBody> bodies{
-        {MakeBody(boxMesh, {150, 0, 50}, 0, 0, 0), red, 2},
-        {MakeBody(boxMesh, {0, 0, 100}, 0, 0, 0), cyan, 2},
-        {MakeBody(boxMesh, {-150, 0, -100}, 0, 0, 0), red, 2},
-        {MakeBody(boxMesh, {-200, 0, 30}, numbers::pi / 2, 0, 0), cyan, 2},
-        {MakeBody(pyrMesh, {100, 0, -100}, 0, 0, 0), white, 1}, // Default: weiss, 1
+        {MakeBody(boxMesh, {150, 0, 50}), red, 2},
+        {MakeBody(boxMesh, {0, 0, 100}), cyan, 2},
+        {MakeBody(boxMesh, {-150, 0, -100}), red, 2},
+        {MakeBody(boxMesh, {-200, 0, 30}, {numbers::pi / 2, 0, 0}), cyan, 2},
+        {MakeBody(pyrMesh, {100, 0, -100}), white, 1}, // Default: weiss, 1
     };
 
     /* ----

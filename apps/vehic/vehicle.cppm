@@ -109,13 +109,13 @@ void Vehicle::alignToVelocity() {
 
     // vel.y/mag muss in [-1,1] liegen (Schutz vor NaN durch Float-Rundung).
     const double cosY = Constrain(vel.y / mag, -1.0, 1.0);
-    body.rotX = std::acos(cosY);
+    body.rot.x = std::acos(cosY);
     if (magXZ < 0.0001) {
-        body.rotY = 0.0;
+        body.rot.y = 0.0;
     } else {
-        body.rotY = std::atan2(vel.x / magXZ, vel.z / magXZ);
+        body.rot.y = std::atan2(vel.x / magXZ, vel.z / magXZ);
     }
-    body.rotZ = 0.0;
+    body.rot.z = 0.0;
 
     // Heading als normalisierte Richtung ableiten.
     heading = vel.Normalize();

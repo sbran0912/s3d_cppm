@@ -332,7 +332,7 @@ struct Body {
     Mesh         Geometry;   // Zeichengeometrie (lokal)
     vector<Face> Faces;      // lokale Faces inkl. Normalen
     Vec3         Pos;
-    double       RotX = 0, RotY = 0, RotZ = 0;
+    Vec3         Rot;        // Euler-Winkel (x, y, z) in Radiant
 
     Matrix4x4     ModelMatrix() const; // Translation * Rotation
     vector<Face>  WorldFaces() const;  // Faces in Weltkoordinaten
@@ -340,7 +340,7 @@ struct Body {
 
 // Faces werden automatisch aus der Geometrie ermittelt (Single Source of Truth):
 Body MakeBody(const Mesh& geometry, const Vec3& pos,
-              double rotX = 0, double rotY = 0, double rotZ = 0);
+              const Vec3& rot = {});
 ```
 
 ```cpp
@@ -351,7 +351,7 @@ double angle = 0;
 auto draw = [&]() {
     BeginScene(scene);
     angle += 0.01;
-    ballBody.RotY = angle;                        // Body drehen
+    ballBody.Rot.y = angle;                       // Body drehen
     DrawMesh(ballBody.Geometry, ballStyle,        // Rendern wie ohne Body
              ballBody.ModelMatrix());             // Körper-Transform nutzen
 };
@@ -369,9 +369,9 @@ TransformFaces(body.Faces, body.ModelMatrix()); // lokale Faces -> Welt
 | | ohne Body | mit Body |
 | --- | --- | --- |
 | Typ | `Mesh` | `Body` (enthält `Mesh`) |
-| Erzeugen | `Make*Mesh(...)` | `MakeBody(mesh, pos, rotX, rotY, rotZ)` |
+| Erzeugen | `Make*Mesh(...)` | `MakeBody(mesh, pos, rot)` |
 | Zeichnen | `DrawMesh(mesh, style, model)` | `DrawMesh(body.Geometry, style, body.ModelMatrix())` |
-| Rotation | Modell-Matrix | `body.RotX/RotY/RotZ` + `ModelMatrix()` |
+| Rotation | Modell-Matrix | `body.Rot` (Vec3) + `ModelMatrix()` |
 | Kollision/Raycast | nicht möglich | `body.Faces`, `body.WorldFaces()`, `RaycastSegment` |
 | Geeignet für | reine Darstellung | Physik, Trefferabfragen, Picking |
 
@@ -670,7 +670,7 @@ int main() {
 
     auto draw = [&]() {
         BeginScene(scene);
-        ball.RotY = angle += 0.01;
+        ball.Rot.y = angle += 0.01;
         DrawMesh(ball.Geometry, ballStyle, ball.ModelMatrix());
 
         // Kollision/Raycasting-Beispiel: Abstand zur Oberfläche
