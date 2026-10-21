@@ -9,11 +9,11 @@ module;
 #include <array>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
+//#include <cstdint>
 #include <functional>
 #include <numbers>
 #include <stdexcept>
-#include <string>
+//#include <string>
 #include <utility>
 #include <vector>
 
